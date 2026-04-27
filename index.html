@@ -1,0 +1,221 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Baldi's Basics Classic</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        --bg: #0b0f14;
+        --panel: #101826;
+        --text: #e6edf3;
+        --muted: #9aa4af;
+        --bar: #3b82f6;
+        --bar-bg: rgba(255, 255, 255, 0.08);
+        --border: rgba(255, 255, 255, 0.12);
+      }
+      html,
+      body {
+        height: 100%;
+        margin: 0;
+        background: var(--bg);
+        color: var(--text);
+        font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, "Apple Color Emoji",
+          "Segoe UI Emoji";
+      }
+      #app {
+        height: 100%;
+        display: grid;
+        grid-template-rows: auto 1fr;
+      }
+      header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        padding: 10px 14px;
+        border-bottom: 1px solid var(--border);
+        background: linear-gradient(180deg, rgba(255, 255, 255, 0.04), rgba(255, 255, 255, 0));
+      }
+      header .title {
+        font-size: 14px;
+        letter-spacing: 0.2px;
+        color: var(--muted);
+        user-select: none;
+      }
+      header button {
+        appearance: none;
+        border: 1px solid var(--border);
+        background: rgba(255, 255, 255, 0.06);
+        color: var(--text);
+        padding: 8px 10px;
+        border-radius: 10px;
+        cursor: pointer;
+      }
+      header button:disabled {
+        opacity: 0.55;
+        cursor: not-allowed;
+      }
+      #stage {
+        position: relative;
+        height: 100%;
+        min-height: 0;
+      }
+      #gameContainer {
+        position: absolute;
+        inset: 0;
+      }
+      #overlay {
+        position: absolute;
+        inset: 0;
+        display: grid;
+        place-items: center;
+        pointer-events: none;
+      }
+      #panel {
+        pointer-events: auto;
+        width: min(520px, calc(100vw - 28px));
+        background: color-mix(in oklab, var(--panel) 92%, black);
+        border: 1px solid var(--border);
+        border-radius: 16px;
+        padding: 16px 16px 14px 16px;
+        box-shadow: 0 20px 70px rgba(0, 0, 0, 0.45);
+      }
+      #status {
+        font-size: 13px;
+        color: var(--muted);
+        margin-bottom: 10px;
+      }
+      #barWrap {
+        height: 10px;
+        background: var(--bar-bg);
+        border-radius: 999px;
+        overflow: hidden;
+        border: 1px solid rgba(255, 255, 255, 0.06);
+      }
+      #bar {
+        height: 100%;
+        width: 0%;
+        background: linear-gradient(90deg, var(--bar), #60a5fa);
+        border-radius: 999px;
+        transition: width 120ms linear;
+      }
+      #hint {
+        margin-top: 10px;
+        font-size: 12px;
+        color: var(--muted);
+      }
+    </style>
+  </head>
+  <body>
+    <div id="app">
+      <header>
+        <div class="title">Baldi's Basics Classic</div>
+        <button id="fullscreenBtn" disabled>Fullscreen</button>
+      </header>
+      <div id="stage">
+        <div id="gameContainer" aria-label="Unity WebGL Player"></div>
+        <div id="overlay">
+          <div id="panel">
+            <div id="status">Preparing…</div>
+            <div id="barWrap"><div id="bar"></div></div>
+            <div id="hint">If this gets stuck, check that the CDN Build files are reachable.</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <script>
+      const BASE_URL = "https://cdn.jsdelivr.net/gh/reeyuki/weirdbaldifnafgame@main/";
+      const BUILD_URL = BASE_URL.replace(/\/+$/, "") + "/Build";
+
+      const BUILD_NAME = "playtimehelbear5van";
+      const JSON_URL = `${BUILD_URL}/${BUILD_NAME}.json`;
+      const UNITY_LOADER_URL = `${BUILD_URL}/UnityLoader.js`;
+
+      const statusEl = document.getElementById("status");
+      const barEl = document.getElementById("bar");
+      const overlayEl = document.getElementById("overlay");
+      const fullscreenBtn = document.getElementById("fullscreenBtn");
+
+      function setStatus(text) {
+        statusEl.textContent = text;
+      }
+      function setProgress01(progress01) {
+        const clamped = Math.max(0, Math.min(1, Number(progress01) || 0));
+        barEl.style.width = `${Math.round(clamped * 100)}%`;
+      }
+      function loadScript(src) {
+        return new Promise((resolve, reject) => {
+          const s = document.createElement("script");
+          s.src = src;
+          s.async = true;
+          s.onload = () => resolve();
+          s.onerror = () => reject(new Error(`Failed to load script: ${src}`));
+          document.head.appendChild(s);
+        });
+      }
+
+      async function buildMergedBlobUrl(partBaseUrl, partSuffix, expectedParts) {
+        const parts = [];
+        for (let i = 0; i < expectedParts; i++) {
+          const idx = String(i).padStart(2, "0");
+          const url = `${partBaseUrl}${idx}${partSuffix}`;
+          const resp = await fetch(url, { cache: "force-cache" });
+          if (!resp.ok) throw new Error(`Missing split part: ${url} (${resp.status})`);
+          parts.push(await resp.arrayBuffer());
+          setStatus(`Downloading split files… (${i + 1})`);
+        }
+        return URL.createObjectURL(new Blob(parts, { type: "application/octet-stream" }));
+      }
+
+      (async () => {
+        try {
+          setStatus("Loading Unity loader…");
+          await loadScript(UNITY_LOADER_URL);
+
+          const jsonDir = JSON_URL.substring(0, JSON_URL.lastIndexOf("/") + 1);
+          const resolveBuildUrl = (url) => {
+            const u = String(url || "");
+            // Absolute schemes (including `blob:`) and origin-absolute paths should not be prefixed.
+            if (/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(u) || u.startsWith("/")) return u;
+            return jsonDir + u;
+          };
+
+          setStatus("Preparing split blobs…");
+          const DATA_PARTS = 10;
+          const WASM_PARTS = 3;
+          const dataUrl = await buildMergedBlobUrl(`${BUILD_URL}/${BUILD_NAME}.data`, "", DATA_PARTS);
+          const wasmCodeUrl = await buildMergedBlobUrl(`${BUILD_URL}/${BUILD_NAME}.wasm`, "", WASM_PARTS);
+
+          setStatus("Starting Unity…");
+          setProgress01(0);
+
+          window.gameInstance = UnityLoader.instantiate("gameContainer", JSON_URL, {
+            onProgress: function (_instance, progress) {
+              setProgress01(progress);
+              if (progress >= 1) {
+                overlayEl.style.display = "none";
+                fullscreenBtn.disabled = false;
+              }
+            },
+            Module: {
+              resolveBuildUrl,
+              dataUrl,
+              wasmCodeUrl,
+              wasmFrameworkUrl: `${BUILD_URL}/${BUILD_NAME}.wasm.framework.unityweb`,
+            },
+          });
+
+          fullscreenBtn.addEventListener("click", () => {
+            if (window.gameInstance && window.gameInstance.SetFullscreen) window.gameInstance.SetFullscreen(1);
+          });
+        } catch (err) {
+          console.error(err);
+          setStatus(err && err.message ? err.message : "Failed to start.");
+        }
+      })();
+    </script>
+  </body>
+</html>

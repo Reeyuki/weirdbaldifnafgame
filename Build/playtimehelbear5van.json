@@ -1,0 +1,12 @@
+{
+"companyName": "DefaultCompany",
+"productName": "Baldi's Basics Classic",
+"dataUrl": "playtimehelbear5van.data.unityweb",
+"wasmCodeUrl": "playtimehelbear5van.wasm.code.unityweb",
+"wasmFrameworkUrl": "playtimehelbear5van.wasm.framework.unityweb",
+"TOTAL_MEMORY": 16777216,
+"graphicsAPI": ["WebGL 2.0", "WebGL 1.0"],
+"webglContextAttributes": {"preserveDrawingBuffer": false},
+"splashScreenStyle": "Dark",
+"backgroundColor": "#000000"
+}
