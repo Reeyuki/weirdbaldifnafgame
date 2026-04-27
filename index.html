@@ -107,8 +107,32 @@
     </div>
 
     <script>
-      const CDN_ROOT =
+      let CDN_ROOT =
         "https://cdn.jsdelivr.net/gh/reeyuki/weirdbaldifnafgame@main/";
+
+      function tryParseJsdelivrGhRoot(root) {
+        try {
+          const u = new URL(root, window.location.href);
+          if (u.hostname !== "cdn.jsdelivr.net") return null;
+          const parts = u.pathname.split("/").filter(Boolean);
+          if (parts.length < 3) return null;
+          if (parts[0] !== "gh") return null;
+          const user = parts[1];
+          const repoAtRef = parts[2];
+          const at = repoAtRef.indexOf("@");
+          if (at === -1) return null;
+          const repo = repoAtRef.slice(0, at);
+          const ref = repoAtRef.slice(at + 1);
+          if (!user || !repo || !ref) return null;
+          return { user, repo, ref };
+        } catch {
+          return null;
+        }
+      }
+
+      function isFullGitSha(ref) {
+        return /^[0-9a-f]{40}$/i.test(ref);
+      }
 
       function normalizeRoot(root) {
         if (!root) return "/";
@@ -134,49 +158,51 @@
           document.head.appendChild(s);
         });
       }
+      (function patchWebAssemblyInstantiate() {
+        if (
+          typeof WebAssembly === "undefined" ||
+          typeof WebAssembly.instantiate !== "function"
+        )
+          return;
 
-      const BUILD_CONFIG = {
-        companyName: "DefaultCompany",
-        productName: "Baldi's Basics Classic",
-        dataUrl: assetUrl("Build/playtimehelbear5van.data.unityweb"),
-        wasmCodeUrl: assetUrl("Build/playtimehelbear5van.wasm.code.unityweb"),
-        wasmFrameworkUrl: assetUrl(
-          "Build/playtimehelbear5van.wasm.framework.unityweb",
-        ),
-        TOTAL_MEMORY: 16777216,
-        graphicsAPI: ["WebGL 2.0", "WebGL 1.0"],
-        webglContextAttributes: { preserveDrawingBuffer: false },
-        splashScreenStyle: "Dark",
-        backgroundColor: "#000000",
-      };
+        const encoder = new TextEncoder();
+        const originalInstantiate = WebAssembly.instantiate.bind(WebAssembly);
 
-      const CHUNKS_BY_FILENAME = {
-        "playtimehelbear5van.data.unityweb": [
-          assetUrl("Build/playtimehelbear5van.data.unityweb00"),
-          assetUrl("Build/playtimehelbear5van.data.unityweb01"),
-          assetUrl("Build/playtimehelbear5van.data.unityweb02"),
-          assetUrl("Build/playtimehelbear5van.data.unityweb03"),
-          assetUrl("Build/playtimehelbear5van.data.unityweb04"),
-          assetUrl("Build/playtimehelbear5van.data.unityweb05"),
-          assetUrl("Build/playtimehelbear5van.data.unityweb06"),
-          assetUrl("Build/playtimehelbear5van.data.unityweb07"),
-          assetUrl("Build/playtimehelbear5van.data.unityweb08"),
-          assetUrl("Build/playtimehelbear5van.data.unityweb09"),
-          assetUrl("Build/playtimehelbear5van.data.unityweb10"),
-          assetUrl("Build/playtimehelbear5van.data.unityweb11"),
-          assetUrl("Build/playtimehelbear5van.data.unityweb12"),
-        ],
-        "playtimehelbear5van.wasm.code.unityweb": [
-          assetUrl("Build/playtimehelbear5van.wasm.code.unityweb00"),
-          assetUrl("Build/playtimehelbear5van.wasm.code.unityweb01"),
-          assetUrl("Build/playtimehelbear5van.wasm.code.unityweb02"),
-        ],
-      };
+        function writeUtf8ToMemory(env, str, ptr, maxBytes) {
+          if (!env || !env.memory || !env.memory.buffer) return 0;
+          const bytes = encoder.encode(str);
+          if (!ptr || !maxBytes) return bytes.length;
+          const heap = new Uint8Array(env.memory.buffer);
+          const n = Math.min(bytes.length, Math.max(0, maxBytes - 1));
+          heap.set(bytes.subarray(0, n), ptr >>> 0);
+          heap[(ptr >>> 0) + n] = 0;
+          return bytes.length;
+        }
 
-      function findChunkListForUrl(url) {
-        for (const filename of Object.keys(CHUNKS_BY_FILENAME)) {
+        WebAssembly.instantiate = function (bufferSource, importObject) {
+          try {
+            const env = importObject && importObject.env;
+            if (
+              env &&
+              typeof env._JS_SystemInfo_GetStreamingAssetsURL !== "function"
+            ) {
+              const url = assetUrl("StreamingAssets/");
+              env._JS_SystemInfo_GetStreamingAssetsURL = function (
+                buffer,
+                bufferSize,
+              ) {
+                return writeUtf8ToMemory(env, url, buffer, bufferSize);
+              };
+            }
+          } catch (_) {}
+          return originalInstantiate(bufferSource, importObject);
+        };
+      })();
+
+      function findChunkListForUrl(chunksByFilename, url) {
+        for (const filename of Object.keys(chunksByFilename)) {
           if (url.endsWith("/" + filename) || url.endsWith(filename))
-            return CHUNKS_BY_FILENAME[filename];
+            return chunksByFilename[filename];
         }
         return null;
       }
@@ -186,7 +212,11 @@
 
         const parts = await Promise.all(
           urls.map(async (url, i) => {
-            const res = await fetch(url, { cache: "force-cache" });
+            const jsd = tryParseJsdelivrGhRoot(CDN_ROOT);
+            const pinned = jsd ? isFullGitSha(jsd.ref) : true;
+            const res = await fetch(url, {
+              cache: pinned ? "force-cache" : "no-store",
+            });
             if (!res.ok)
               throw new Error(
                 "Failed to fetch chunk: " + url + " (" + res.status + ")",
@@ -204,7 +234,7 @@
               });
             }
             return new Uint8Array(buf);
-          })
+          }),
         );
 
         let totalBytes = 0;
@@ -386,11 +416,16 @@
       }
 
       function patchUnityLoaderForChunks() {
+        const chunksByFilename = patchUnityLoaderForChunks.chunksByFilename;
+        if (!chunksByFilename) return;
         if (!window.UnityLoader || !UnityLoader.downloadJob) return;
 
         const originalDownloadJob = UnityLoader.downloadJob;
         UnityLoader.downloadJob = function (instance, job) {
-          const chunkUrls = findChunkListForUrl(job.parameters.url);
+          const chunkUrls = findChunkListForUrl(
+            chunksByFilename,
+            job.parameters.url,
+          );
           if (!chunkUrls) return originalDownloadJob(instance, job);
 
           (async () => {
@@ -399,12 +434,18 @@
                 chunkUrls,
                 job.parameters.onprogress,
               );
-              UnityLoader.Compression.decompress(
-                joined,
-                function (decompressed) {
+              const looksGzip =
+                joined &&
+                joined.byteLength >= 2 &&
+                joined[0] === 0x1f &&
+                joined[1] === 0x8b;
+              if (looksGzip && UnityLoader.Compression?.decompress) {
+                UnityLoader.Compression.decompress(joined, (decompressed) => {
                   job.complete(decompressed);
-                },
-              );
+                });
+              } else {
+                job.complete(joined);
+              }
             } catch (err) {
               console.error(err);
               job.complete(null);
@@ -430,7 +471,7 @@
         try {
           const gameInstance = UnityLoader.instantiate(
             "gameContainer",
-            BUILD_CONFIG,
+            boot.BUILD_CONFIG,
             { onProgress },
           );
 
@@ -462,6 +503,100 @@
         const errEl = document.getElementById("err");
         const statusEl = document.getElementById("status");
         try {
+          const jsd = tryParseJsdelivrGhRoot(CDN_ROOT);
+          if (jsd && !isFullGitSha(jsd.ref)) {
+            statusEl.textContent = "Resolving CDN commit…";
+            try {
+              const cacheKey = `jsd:sha:${jsd.user}/${jsd.repo}@${jsd.ref}`;
+              let sha = null;
+              try {
+                const cached = JSON.parse(
+                  sessionStorage.getItem(cacheKey) || "null",
+                );
+                if (
+                  cached &&
+                  typeof cached.sha === "string" &&
+                  isFullGitSha(cached.sha) &&
+                  typeof cached.t === "number" &&
+                  Date.now() - cached.t < 2 * 60 * 1000
+                ) {
+                  sha = cached.sha;
+                }
+              } catch (_) {}
+
+              if (!sha) {
+                const resp = await fetch(
+                  `https://api.github.com/repos/${jsd.user}/${jsd.repo}/commits/${encodeURIComponent(jsd.ref)}`,
+                  {
+                    headers: {
+                      Accept: "application/vnd.github+json",
+                    },
+                    cache: "no-store",
+                  },
+                );
+                if (resp.ok) {
+                  const data = await resp.json();
+                  if (
+                    data &&
+                    typeof data.sha === "string" &&
+                    isFullGitSha(data.sha)
+                  ) {
+                    sha = data.sha;
+                    sessionStorage.setItem(
+                      cacheKey,
+                      JSON.stringify({ sha, t: Date.now() }),
+                    );
+                  }
+                }
+              }
+              if (sha && isFullGitSha(sha)) {
+                CDN_ROOT = `https://cdn.jsdelivr.net/gh/${jsd.user}/${jsd.repo}@${sha}/`;
+              }
+            } catch (e) {
+              console.warn("Failed to resolve branch to commit SHA", e);
+            }
+          }
+
+          boot.BUILD_CONFIG = {
+            companyName: "DefaultCompany",
+            productName: "Baldi's Basics Classic",
+            dataUrl: assetUrl("Build/playtimehelbear5van.data.unityweb"),
+            wasmCodeUrl: assetUrl(
+              "Build/playtimehelbear5van.wasm.code.unityweb",
+            ),
+            wasmFrameworkUrl: assetUrl(
+              "Build/playtimehelbear5van.wasm.framework.unityweb",
+            ),
+            TOTAL_MEMORY: 16777216,
+            graphicsAPI: ["WebGL 2.0", "WebGL 1.0"],
+            webglContextAttributes: { preserveDrawingBuffer: false },
+            splashScreenStyle: "Dark",
+            backgroundColor: "#000000",
+          };
+
+          patchUnityLoaderForChunks.chunksByFilename = {
+            "playtimehelbear5van.data.unityweb": [
+              assetUrl("Build/playtimehelbear5van.data.unityweb00"),
+              assetUrl("Build/playtimehelbear5van.data.unityweb01"),
+              assetUrl("Build/playtimehelbear5van.data.unityweb02"),
+              assetUrl("Build/playtimehelbear5van.data.unityweb03"),
+              assetUrl("Build/playtimehelbear5van.data.unityweb04"),
+              assetUrl("Build/playtimehelbear5van.data.unityweb05"),
+              assetUrl("Build/playtimehelbear5van.data.unityweb06"),
+              assetUrl("Build/playtimehelbear5van.data.unityweb07"),
+              assetUrl("Build/playtimehelbear5van.data.unityweb08"),
+              assetUrl("Build/playtimehelbear5van.data.unityweb09"),
+              assetUrl("Build/playtimehelbear5van.data.unityweb10"),
+              assetUrl("Build/playtimehelbear5van.data.unityweb11"),
+              assetUrl("Build/playtimehelbear5van.data.unityweb12"),
+            ],
+            "playtimehelbear5van.wasm.code.unityweb": [
+              assetUrl("Build/playtimehelbear5van.wasm.code.unityweb00"),
+              assetUrl("Build/playtimehelbear5van.wasm.code.unityweb01"),
+              assetUrl("Build/playtimehelbear5van.wasm.code.unityweb02"),
+            ],
+          };
+
           statusEl.textContent = "Loading loader…";
           await loadScript(assetUrl("Build/UnityLoader.js"));
           statusEl.textContent = "Loading…";
