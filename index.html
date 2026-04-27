@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8" />
     <meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
-    <title>Baldi's Basics Classic</title>
+    <title>Bear5</title>
     <meta
       name="viewport"
       content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no"
@@ -182,27 +182,30 @@
       }
 
       async function fetchAndJoin(urls, onProgress) {
-        const parts = [];
+        const loaded = new Array(urls.length).fill(false);
 
-        for (let i = 0; i < urls.length; i++) {
-          const res = await fetch(urls[i], { cache: "force-cache" });
-          if (!res.ok)
-            throw new Error(
-              "Failed to fetch chunk: " + urls[i] + " (" + res.status + ")",
-            );
-          const buf = await res.arrayBuffer();
-          const u8 = new Uint8Array(buf);
-          parts.push(u8);
-          if (typeof onProgress === "function") {
-            onProgress({
-              lengthComputable: true,
-              loaded: i + 1,
-              total: urls.length,
-              chunk: i + 1,
-              chunks: urls.length,
-            });
-          }
-        }
+        const parts = await Promise.all(
+          urls.map(async (url, i) => {
+            const res = await fetch(url, { cache: "force-cache" });
+            if (!res.ok)
+              throw new Error(
+                "Failed to fetch chunk: " + url + " (" + res.status + ")",
+              );
+            const buf = await res.arrayBuffer();
+            loaded[i] = true;
+            if (typeof onProgress === "function") {
+              const done = loaded.filter(Boolean).length;
+              onProgress({
+                lengthComputable: true,
+                loaded: done,
+                total: urls.length,
+                chunk: done,
+                chunks: urls.length,
+              });
+            }
+            return new Uint8Array(buf);
+          })
+        );
 
         let totalBytes = 0;
         for (const p of parts) totalBytes += p.byteLength;
